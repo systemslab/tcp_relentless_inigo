@@ -7,14 +7,14 @@ generally fair to other network users.  It MUST NOT be used unless the network
 is designed to actively control it to protect other flows and the Internet at
 large from its aggressiveness.
 
-To protect other flows, the network carring Relentless TCP traffic has to
+To protect other flows, the network carrying Relentless TCP traffic has to
 implement Scavenger Service, Fair Queuing, Approximate Fair Dropping, or some
 other capacity allocation algorithm.
 
-To protect the Internet at large the network carring Relentless TCP traffic
+To protect the Internet at large the network carrying Relentless TCP traffic
 has to be a physically or logically isolated from the rest of the Internet.
-Be espically warry of the potential for dynamic routing to choose an
-alternative path that can not adiquiately contol Relentless TCP.
+Be especially wary of the potential for dynamic routing to choose an
+alternative path that can not adequately control Relentless TCP.
 
 To minimize the risks associated with Relentless TCP, it has to be enabled on a
 per-connection basis.
@@ -29,7 +29,7 @@ to the same computed window size.  This is particularly important to compensate
 for the hard wired algorithms (cwnd validation, etc) that pull cwnd down to
 flight size under various conditions, mostly to prevent bursts.  If these
 algorithms have been invoked, once TCP is past recovery, it will slow-start
-back up to the the window that was actually delivered during the lossy round
+back up to the window that was actually delivered during the lossy round
 trip.
 
 To build Relentless TCP for the currently running kernel:
@@ -58,22 +58,3 @@ make -C /lib/modules/`uname -r`/build M=`pwd` modules_install
 
 insmod /lib/modules/`uname -r`/extra/tcp_relentless.ko
 echo relentless > /proc/sys/net/ipv4/tcp_congestion_control
-
-6) In applications that need Relentless TCP, turn it on by setting the
-   IP TOS/DSCP byte to less than best effort service (RFC 3662):
-
-    {
-	int tos = 0x20
-	int opt_len = sizeof(tos);
-        if (setsockopt(sock, IPPROTO_IP, IP_TOS, (void *)&tos, opt_len)) {
-             perror("Couldn't set TOS");
-             exit(-1);
-        }
-    }
-
-
-Note: the file Rsupport.patch is not used by these procedures.  It is provided
-as a reference for people who are building complete kernels from source and
-wish to merge Relentless TCP into their regular kernel builds.
-
-

@@ -28,17 +28,6 @@
 #include <linux/module.h>
 #include <net/tcp.h>
 
-#define TOS_SCAVENGER	0x20 /* I2 QBSS definition of scavenger (top 6 bits only) */
-/* See http://qos.internet2.edu/wg/documents/qbss-deployment-recommendation.txt */
-
-/* Check the TOS byte - XXX layer violation */
-static int xxx_check_tos(const struct sock *sk)
-{
-    struct inet_sock *inet = inet_sk(sk);
-
-    return(inet->tos == TOS_SCAVENGER);
-}
-
 /* Relentless structure */
 struct relentless {
     u32	save_cwnd;  /* saved cwnd from before disorder or recovery */
@@ -52,16 +41,15 @@ inline static void relentless_init(struct sock *sk)
 	w->cwndnlosses = 0;
 }
 
-/* tweak tcp_reno_cong_avoid() */
-static void relentless_cong_avoid(struct sock *sk, u32 ack, u32 in_flight, int good)
+static void relentless_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 {
     struct tcp_sock *tp = tcp_sk(sk);
     struct relentless *rl = inet_csk_ca(sk);
 
-    if (xxx_check_tos(sk) && good && (in_flight > tp->snd_cwnd))
-	tp->snd_cwnd = in_flight;	/* defeat all policy based cwnd reductions */
+    /* defeat all policy based cwnd reductions */
+    tp->snd_cwnd = max(tp->snd_cwnd, tcp_packets_in_flight(tp));
 
-    tcp_reno_cong_avoid(sk, ack, in_flight, good);
+    tcp_reno_cong_avoid(sk, ack, acked);
     rl->save_cwnd = tp->snd_cwnd;
     rl->cwndnlosses = tp->snd_cwnd + tp->total_retrans;
 }
@@ -71,30 +59,13 @@ static u32 relentless_ssthresh(struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 
-	if (!xxx_check_tos(sk))
-	    return(tcp_reno_ssthresh(sk));
-
 	return max(tp->snd_cwnd, 2U);	/* Done already */
-}
-
-/* Don't reduce the window while in recovery */
-static u32 relentless_min_cwnd(const struct sock *sk)
-{
-	const struct tcp_sock *tp = tcp_sk(sk);
-
-	if (!xxx_check_tos(sk))
-	    return(tcp_reno_min_cwnd(sk));
-
-	return tp->snd_cwnd + 1;  /* never rate halve */
 }
 
 static void relentless_event(struct sock *sk, enum tcp_ca_event event)
 {
     struct tcp_sock *tp = tcp_sk(sk);
     struct relentless *rl = inet_csk_ca(sk);
-    
-    if (!xxx_check_tos(sk))
-	return;
 
     switch (event) {
 
@@ -113,7 +84,6 @@ static struct tcp_congestion_ops tcp_relentless = {
 	.init		= relentless_init,
 	.ssthresh	= relentless_ssthresh,
 	.cong_avoid	= relentless_cong_avoid,
-	.min_cwnd	= relentless_min_cwnd,
 	.cwnd_event	= relentless_event
 };
 
@@ -133,4 +103,3 @@ module_exit(relentless_unregister);
 MODULE_AUTHOR("Matt Mathis");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Relentless TCP");
-

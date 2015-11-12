@@ -1,19 +1,14 @@
-# Makefile for tcp_relentless.c
-# this includes an implicit Kbuild, per Documentation/kbuild/modules.txt
+KVERS ?= $(shell uname -r)
+MODNAME = tcp_relentless
+MODDIR = net/ipv4
 
-ifneq ($(KERNELRELEASE),)
-# the kbuild imbedded in this makefile
-obj-m := tcp_relentless.o
+obj-m := $(MODNAME).o
+all:
+	$(MAKE) -C /lib/modules/$(KVERS)/build M=$(shell pwd) modules
 
-else
-# The real Makefile is nearly empty
-
-KERNELDIR := /lib/modules/`uname -r`/build
-all::
-	$(MAKE) -C $(KERNELDIR) M=`pwd` $@
+install:
+	install -m 0644 $(MODNAME).ko /lib/modules/$(KVERS)/kernel/$(MODDIR)/
+	depmod -a
 
 clean:
-	rm -f *.o *.ko .tcp*.o Module.symvers
-
-# that's all folks
-endif
+	rm -rf *.ko *.o *.order *.symvers *.mod.* .*cmd .tmp_versions
