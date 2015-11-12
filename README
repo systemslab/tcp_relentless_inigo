@@ -1,0 +1,79 @@
+Relentless TCP
+Matt Mathis, 2008
+
+Relentless TCP is designed to maintain a standing queue at some network
+bottleneck.  It does so without regards to other traffic, and thus it is not
+generally fair to other network users.  It MUST NOT be used unless the network
+is designed to actively control it to protect other flows and the Internet at
+large from its aggressiveness.
+
+To protect other flows, the network carring Relentless TCP traffic has to
+implement Scavenger Service, Fair Queuing, Approximate Fair Dropping, or some
+other capacity allocation algorithm.
+
+To protect the Internet at large the network carring Relentless TCP traffic
+has to be a physically or logically isolated from the rest of the Internet.
+Be espically warry of the potential for dynamic routing to choose an
+alternative path that can not adiquiately contol Relentless TCP.
+
+To minimize the risks associated with Relentless TCP, it has to be enabled on a
+per-connection basis.
+
+Relentless TCP is based on standard Reno Congestion Control, except when there
+is packet loss, cwnd is only reduced by the actual number of lost packets.
+Thus, under normal conditions cwnd is set to the actual amount of data
+successfully delivered during a lossy round trip.
+
+Other algorithms that reduce cwnd are effectively defeated by setting ssthresh
+to the same computed window size.  This is particularly important to compensate
+for the hard wired algorithms (cwnd validation, etc) that pull cwnd down to
+flight size under various conditions, mostly to prevent bursts.  If these
+algorithms have been invoked, once TCP is past recovery, it will slow-start
+back up to the the window that was actually delivered during the lossy round
+trip.
+
+To build Relentless TCP for the currently running kernel:
+
+1) Confirm that your current kernel has advanced congestion control:
+Both of the commands below should report: CONFIG_TCP_CONG_ADVANCED=y
+
+fgrep CONFIG_TCP_CONG_ADVANCED /boot/config-`uname -r`
+fgrep CONFIG_TCP_CONG_ADVANCED /lib/modules/`uname -r`/build/.config
+
+2) Confirm that you have full kernel includes installed in the standard
+location.  The command below should show the top of the standard kernel
+Makefile used to build your kernel:
+
+head /lib/modules/`uname -r`/build/Makefile
+
+3) In the relentless source directory, build the relentless module:
+
+make -C /lib/modules/`uname -r`/build M=`pwd` 
+
+4) Install the module in /lib/modules:
+
+make -C /lib/modules/`uname -r`/build M=`pwd` modules_install
+
+5) Load the module into the running kernel and select it:
+
+insmod /lib/modules/`uname -r`/extra/tcp_relentless.ko
+echo relentless > /proc/sys/net/ipv4/tcp_congestion_control
+
+6) In applications that need Relentless TCP, turn it on by setting the
+   IP TOS/DSCP byte to less than best effort service (RFC 3662):
+
+    {
+	int tos = 0x20
+	int opt_len = sizeof(tos);
+        if (setsockopt(sock, IPPROTO_IP, IP_TOS, (void *)&tos, opt_len)) {
+             perror("Couldn't set TOS");
+             exit(-1);
+        }
+    }
+
+
+Note: the file Rsupport.patch is not used by these procedures.  It is provided
+as a reference for people who are building complete kernels from source and
+wish to merge Relentless TCP into their regular kernel builds.
+
+
