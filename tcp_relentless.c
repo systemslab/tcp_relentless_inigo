@@ -63,8 +63,10 @@ inline static void relentless_init(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct relentless *ca = inet_csk_ca(sk);
+/*
 	const struct inet_sock *inet = inet_sk(sk);
 	u32 saddr = be32_to_cpu(inet->inet_saddr);
+ */
 	ca->save_cwnd = 0;
 	ca->cwndnlosses = 0;
 
@@ -73,9 +75,11 @@ inline static void relentless_init(struct sock *sk)
 	ca->rtt_cwnd = tp->snd_cwnd << 10U;
 
         ca->debug = false;
+/*
 	pr_info("dctcp: saddr=%u\n", saddr);
         if (debug_port == 0 || ((ntohs(inet->inet_dport) == debug_port) && saddr == debug_src))
                 ca->debug = true;
+ */
 
 	pr_info("relentless init: rtt_cwnd=%u\n", ca->rtt_cwnd);
 }
@@ -167,7 +171,7 @@ static void relentless_pkts_acked(struct sock *sk, u32 num_acked, s32 rtt)
 
 		tp->snd_cwnd = (ca->rtt_cwnd >> 10U);
 
-		if (tp->snd_cwnd <= tp->snd_ssthresh) {
+		if (tp->snd_cwnd < tp->snd_ssthresh) {
 			tp->snd_ssthresh = tp->snd_cwnd;
 
 			if (ca->debug)
