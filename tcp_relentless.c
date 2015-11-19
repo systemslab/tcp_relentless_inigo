@@ -1,28 +1,17 @@
 /*
- * Relentless TCP
+ * Relentless DCTCP
  * 
- * This TCP is designed to efficiently and stably control hard against a limit
- * imposed by the network.  It assumes the presence of some mechanism in the
- * network to control the traffic.  (E.g. Weighted Fair Queuing)
- * 
- * It is the same as stock Linux Reno with SACK and ratehalving, except during
- * recovery, the window is only reduced by the actual losses.  This normally
- * results in a new cwnd that is exactly equal to the data actually delivered
- * during the lossy round trip.
- * 
- * Most of the complexity of this code comes from suppressing other algorithms
- * that implicitly reduce cwnd.  For example, if the connection runs out of
- * receiver window, ratehaving implicitly reduces cwnd to the flight size.
- * This reduction is effectively defeated by setting ssthresh to the explicitly
- * calculated (cwnd - retransmissions), such that by one RTT after the end of
- * recovery, cwnd comes back up to its prior value, minus any losses.
+ * This TCP is descended from DCTCP and Relentless. Rather than backing off
+ * according to a congestion ratio once per RTT, it backs off by a fixed
+ * fraction of the bytes corresponding to each ACK. In addition to using ECN
+ * markings, it falls back to a similar RTT threshold.
  *
- * IT IS NOT FAIR TO OTHER TCP IMPLEMENTATIONS OR OTHER PROTOCOLS.  It is
- * UNSAFE except on isolated networks, or networks that explicitly enforce
- * fairness.  Read and understand the README file before attempting to use this
- * code.
+ * The idea for this style of per-ACK response came from Bob Briscoe.
  *
- * Matt Mathis <mathis@psc.edu>, April 2008.
+ * Unlike the original Relentless TCP, this variant is safe to deploy on
+ * networks even if the network is not actively managing congestion.
+ *
+ * Andrew Shewmaker <shewa@lanl.gov>, November 2015.
  */
 
 #include <linux/module.h>
@@ -55,8 +44,7 @@ MODULE_PARM_DESC(debug_src, "Source IP address to match for debugging (0=all)");
 
 /* Relentless structure */
 struct relentless {
-	u32 save_cwnd;     /* saved cwnd from before disorder or recovery */
-	u32 cwndnlosses;   /* ditto plus total losses todate */
+	u32 cwndnlosses;   /* saved cwnd plus total losses before disorder or recovery */
 	u32 rtts_observed;
 	u32 rtt_min;
 	u32 rtt_thresh;
@@ -75,7 +63,6 @@ inline static void relentless_init(struct sock *sk)
 	struct relentless *ca = inet_csk_ca(sk);
 	const struct inet_sock *inet = inet_sk(sk);
 	u32 saddr = be32_to_cpu(inet->inet_saddr);
-	ca->save_cwnd = 0;
 	ca->cwndnlosses = 0;
 
 	ca->rtts_observed = 0;
@@ -83,9 +70,11 @@ inline static void relentless_init(struct sock *sk)
 	ca->rtt_cwnd = ca->ecn_cwnd = tp->snd_cwnd << 10U;
 
         ca->debug = false;
-	pr_info("dctcp: saddr=%u\n", saddr);
+	pr_info("relentless: saddr=%u\n", saddr);
+/*
         if (debug_port == 0 || ((ntohs(inet->inet_dport) == debug_port) && saddr == debug_src))
                 ca->debug = true;
+ */
 
 	pr_info("relentless init: rtt_cwnd=%u\n", ca->rtt_cwnd);
 
@@ -106,33 +95,36 @@ void relentless_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct relentless *ca = inet_csk_ca(sk);
+	u32 cwnd;
 
 	/* defeat all policy based cwnd reductions */
 	tp->snd_cwnd = max(tp->snd_cwnd, tcp_packets_in_flight(tp));
 
-//	if (!tcp_is_cwnd_limited(sk))
-//		return;
-//
-//	/* In "safe" area, increase. */
-//	if (tcp_in_slow_start(tp)) {
-//		acked = tcp_slow_start(tp, acked);
-//		ca->rtt_cwnd = tp->snd_cwnd << 10U;
-//		if (ca->debug)
-//			pr_info_ratelimited("relentless slow start: rtt_cwnd=%u, cwnd=%u, ssthresh=%u\n",
-//				ca->rtt_cwnd, tp->snd_cwnd, tp->snd_ssthresh);
-//		if (!acked)
-//			return;
-//	}
-//	/* In dangerous area, increase slowly. */
-//	tcp_cong_avoid_ai(tp, tp->snd_cwnd, acked);
-//	ca->rtt_cwnd = tp->snd_cwnd << 10U;
-//
-//	if (ca->debug)
-//		pr_info_ratelimited("relentless cong avoid: rtt_cwnd=%u, cwnd=%u, ssthresh=%u\n",
-//			ca->rtt_cwnd, tp->snd_cwnd, tp->snd_ssthresh);
+	if (!tcp_is_cwnd_limited(sk))
+		return;
 
-	ca->save_cwnd = tp->snd_cwnd;
+	switch (detect) {
+	case 1:
+		cwnd = (ca->ecn_cwnd >> 10U);
+		break;
+	case 2:
+		cwnd = min(ca->rtt_cwnd, ca->ecn_cwnd) >> 10U;
+		break;
+	default:
+		cwnd = (ca->rtt_cwnd >> 10U);
+		break;
+	}
+
+	if (tcp_in_slow_start(tp))
+		tp->snd_cwnd = min(cwnd, tp->snd_ssthresh);
+	else
+		tp->snd_cwnd = cwnd;
+
 	ca->cwndnlosses = tp->snd_cwnd + tp->total_retrans;
+
+	if (ca->debug)
+		pr_info_ratelimited("relentless: cwnd=%u, ssthresh=%u\n",
+			tp->snd_cwnd, tp->snd_ssthresh);
 }
 
 /* Slow start threshold follows cwnd, to defeat slowstart and cwnd moderation, etc */
@@ -257,7 +249,7 @@ static void relentless_pkts_acked(struct sock *sk, u32 num_acked, s32 rtt)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct relentless *ca = inet_csk_ca(sk);
-	u32 r, cwnd;
+	u32 r;
 
 	ca->rtts_observed++;
 	r = (u32) rtt;
@@ -270,8 +262,12 @@ static void relentless_pkts_acked(struct sock *sk, u32 num_acked, s32 rtt)
 	/* Mimic DCTCP ECN marking threshhold of approximately 0.17*BDP */
 	if (r > ca->rtt_thresh) {
 		if (ca->rtts_observed > slowstart_rtt_observations_needed) {
-			ca->rtt_cwnd -= (num_acked << 6U);
+			//ca->rtt_cwnd += (RELENTLESS_WIN_SCALE / tp->snd_cwnd);
+			ca->rtt_cwnd -= min(ca->rtt_cwnd, num_acked << 6U);
 			ca->rtt_cwnd = max(ca->rtt_cwnd, (2U << 10U));
+
+			if (tcp_in_slow_start(tp))
+				tp->snd_ssthresh = tp->snd_cwnd;
 /*
 			if (ca->debug)
 				pr_info_ratelimited("relentless backoff: rtt_min=%u, rtt_thresh=%u, rtt=%u, rtt_cwnd=%u\n",
@@ -282,39 +278,11 @@ static void relentless_pkts_acked(struct sock *sk, u32 num_acked, s32 rtt)
 	} else {
 		ca->rtt_cwnd += RELENTLESS_WIN_SCALE;
 	}
-
-	switch (detect) {
-	case 1:
-		cwnd = (ca->ecn_cwnd >> 10U);
-		break;
-	case 2:
-		cwnd = min(ca->rtt_cwnd, ca->ecn_cwnd) >> 10U;
-		break;
-	default:
-		cwnd = (ca->rtt_cwnd >> 10U);
-		break;
-	}
-
-	if (cwnd < tp->snd_cwnd) {
-		tp->snd_ssthresh = cwnd;
-
-/*
-		if (ca->debug)
-			pr_info_ratelimited("relentless exit slow start: rtt_min=%u, rtt_thresh=%u, rtt=%u, rtt_cwnd=%u, cwnd=%u, ssthresh=%u\n",
-				ca->rtt_min, ca->rtt_thresh, (u32)r, ca->rtt_cwnd, tp->snd_cwnd, tp->snd_ssthresh);
- */
-	}
-
-	tp->snd_cwnd = cwnd;
-
-	if (ca->debug)
-		pr_info_ratelimited("relentless: cwnd=%u, ssthresh=%u\n",
-			tp->snd_cwnd, tp->snd_ssthresh);
 }
 
 static void relentless_in_ack_event(struct sock *sk, u32 flags)
 {
-	const struct tcp_sock *tp = tcp_sk(sk);
+	struct tcp_sock *tp = tcp_sk(sk);
 	struct relentless *ca = inet_csk_ca(sk);
 	u32 acked_bytes, mss;
 
@@ -329,18 +297,15 @@ static void relentless_in_ack_event(struct sock *sk, u32 flags)
 		ca->prior_snd_una = tp->snd_una;
 
 	if (!(flags & CA_ACK_ECE)) {
-		if (tp->snd_cwnd < tp->snd_ssthresh)
-			ca->ecn_cwnd += (3 << 9U);
-		else
-			ca->ecn_cwnd += (20 * RELENTLESS_WIN_SCALE / tp->snd_cwnd);
-
-		if (ca->debug)
-			pr_info_ratelimited("relentless increase: ecn_cwnd=%u\n",
-				ca->ecn_cwnd);
+		ca->ecn_cwnd += RELENTLESS_WIN_SCALE;
 		return;
 	}
 
-	ca->ecn_cwnd -= min(ca->ecn_cwnd, ((acked_bytes / mss) << 6U));
+	if (tcp_in_slow_start(tp))
+		tp->snd_ssthresh = tp->snd_cwnd;
+
+	ca->ecn_cwnd += (RELENTLESS_WIN_SCALE / tp->snd_cwnd);
+	ca->ecn_cwnd -= min(ca->ecn_cwnd, ((acked_bytes / mss) << 7U));
 	ca->ecn_cwnd = max(ca->ecn_cwnd, (2U << 10U));
 
 	if (ca->debug)
@@ -372,6 +337,6 @@ static void __exit relentless_unregister(void)
 module_init(relentless_register);
 module_exit(relentless_unregister);
 
-MODULE_AUTHOR("Matt Mathis");
+MODULE_AUTHOR("Andrew Shewmaker");
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Relentless TCP");
+MODULE_DESCRIPTION("Relentless DCTCP");
