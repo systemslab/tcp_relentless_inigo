@@ -304,7 +304,7 @@ static void relentless_in_ack_event(struct sock *sk, u32 flags)
 	if (tcp_in_slow_start(tp))
 		tp->snd_ssthresh = tp->snd_cwnd;
 
-	//ca->ecn_cwnd += (RELENTLESS_WIN_SCALE / tp->snd_cwnd);
+	ca->ecn_cwnd += (RELENTLESS_WIN_SCALE / tp->snd_cwnd);
 	ca->ecn_cwnd -= min(ca->ecn_cwnd, ((acked_bytes / mss) << 9U));
 	ca->ecn_cwnd = max(ca->ecn_cwnd, (2U << 10U));
 
