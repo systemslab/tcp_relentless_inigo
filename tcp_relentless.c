@@ -297,16 +297,14 @@ static void relentless_in_ack_event(struct sock *sk, u32 flags)
 		ca->prior_snd_una = tp->snd_una;
 
 	if (!(flags & CA_ACK_ECE)) {
-		if (tcp_in_slow_start(tp))
-			ca->ecn_cwnd += RELENTLESS_WIN_SCALE;
-		else
-			ca->ecn_cwnd += (RELENTLESS_WIN_SCALE / tp->snd_cwnd);
+		ca->ecn_cwnd += RELENTLESS_WIN_SCALE;
 		return;
 	}
 
 	if (tcp_in_slow_start(tp))
 		tp->snd_ssthresh = tp->snd_cwnd;
 
+	//ca->ecn_cwnd += (RELENTLESS_WIN_SCALE / tp->snd_cwnd);
 	ca->ecn_cwnd -= min(ca->ecn_cwnd, ((acked_bytes / mss) << 9U));
 	ca->ecn_cwnd = max(ca->ecn_cwnd, (2U << 10U));
 
